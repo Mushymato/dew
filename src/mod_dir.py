@@ -81,19 +81,17 @@ class Manifest:
     def add_dependents(self, mods_installed):
         mapped_dependent_on = []
         for dep in self.dependent_on:
-            if not dep[1] or isinstance(dep[1], str) and dep[1].lower() == "false":
-                continue
             try:
-                depon = mods_installed[dep[0]]
+                depon = mods_installed[dep[0].upper()]
             except Exception:
-                logger.warning(f"Missing dependency for {self} ({dep})")
+                continue
             mapped_dependent_on.append(depon)
             depon.dependents.append(self)
         self.dependent_on = mapped_dependent_on
 
         if self.content_pack_for:
             try:
-                conpack = mods_installed[self.content_pack_for]
+                conpack = mods_installed[self.content_pack_for.upper()]
                 conpack.content_packs.append(self)
                 self.content_pack_for = conpack
             except:
@@ -111,17 +109,17 @@ class ModDir:
         self._mods_installed: CaselessDict[str, Manifest] = None
 
     @property
-    def mods_installed(self) -> CaselessDict[str, Manifest]:
+    def mods_installed(self) -> dict[str, Manifest]:
         if self._mods_installed is not None:
             return self._mods_installed
-        self._mods_installed = CaselessDict({})
+        self._mods_installed = {}
         for root, dirs, _files in self.path.walk():
             for dirname in dirs:
                 manifest_path = root / dirname / "manifest.json"
                 if not manifest_path.is_file():
                     continue
                 manifest = Manifest(manifest_path)
-                self._mods_installed[manifest.unique_id] = manifest
+                self._mods_installed[manifest.unique_id.upper()] = manifest
         for manifest in self._mods_installed.values():
             manifest.add_dependents(self._mods_installed)
         return self._mods_installed
