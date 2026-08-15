@@ -1,0 +1,3 @@
+pyjson5
+py7zr
+python-dotenv
