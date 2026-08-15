@@ -1,8 +1,8 @@
-from collections import deque
 import logging
 from pathlib import Path
-from typing import Dict, Generator, List
+from typing import Dict
 from dotenv import dotenv_values
+from rich.text import Text
 import pyjson5
 
 from .updooter import Updooter
@@ -38,7 +38,7 @@ class CaselessDict(dict):
 
 
 class Manifest:
-    def __init__(self, manifest_path):
+    def __init__(self, manifest_path, enabled):
         self._path = manifest_path
         with open(self._path, "r", encoding="utf-8-sig") as fn:
             try:
@@ -46,6 +46,7 @@ class Manifest:
             except:
                 raise
         self.unique_id = self._data["UniqueId"]
+        self.name = self._data["Name"]
         self.nexus_id = None
         for upkey in self._data.get("UpdateKeys", []):
             if upkey.lower().startswith("nexus:"):
@@ -63,9 +64,22 @@ class Manifest:
         # update in pass 2
         self.dependents = []
         self.content_packs = []
+        # for manager
+        self.base_enabled = enabled
+        self.enabled = self.base_enabled
 
     def __repr__(self):
-        return f"{self.unique_id}(n:{self.nexus_id})"
+        return f"{self.unique_id} (n:{self.nexus_id})"
+
+    @property
+    def richtext(self):
+        if self.enabled:
+            return Text(str(self))
+        return Text(str(self), style="strike")
+
+    @property
+    def status_mark(self):
+        return "✔" if self.enabled else ""
 
     @property
     def is_root(self):
@@ -102,27 +116,34 @@ class ModDir:
     def __init__(self, rel_path: str):
         self.dotenv: Dict[str, str] = dotenv_values()
         self.rel_path = rel_path
-        self.path: Path = Path(self.dotenv["stardew_path"]) / self.rel_path
-        self.path.mkdir(exist_ok=True)
-        logger.info(f"Dir: {self.path}")
-        self.updooter: Updooter = Updooter(self.path, self.dotenv["nexus_apikey"])
+        self.stardew_path: Path = Path(self.dotenv["stardew_path"])
+        self.mod_path: Path = self.stardew_path / self.rel_path
+        self.mod_path.mkdir(exist_ok=True)
+        logger.info(f"Dir: {self.mod_path}")
+        self.updooter: Updooter = Updooter(self.mod_path, self.dotenv["nexus_apikey"])
         self._mods_installed: CaselessDict[str, Manifest] = None
 
     @property
     def mods_installed(self) -> dict[str, Manifest]:
         if self._mods_installed is not None:
             return self._mods_installed
-        self._mods_installed = {}
-        for root, dirs, _files in self.path.walk():
+        self._mods_installed = self.init_mods_installed()
+        return self._mods_installed
+
+    def init_mods_installed(self) -> dict[str, Manifest]:
+        mods_installed = {}
+        for root, dirs, _files in self.mod_path.walk():
             for dirname in dirs:
                 manifest_path = root / dirname / "manifest.json"
                 if not manifest_path.is_file():
                     continue
-                manifest = Manifest(manifest_path)
-                self._mods_installed[manifest.unique_id.upper()] = manifest
-        for manifest in self._mods_installed.values():
-            manifest.add_dependents(self._mods_installed)
-        return self._mods_installed
+                dirname = Path(dirname)
+                enabled = all((not part.startswith(".") for part in dirname.parts))
+                manifest = Manifest(manifest_path, enabled)
+                mods_installed[manifest.unique_id.upper()] = manifest
+        for manifest in mods_installed.values():
+            manifest.add_dependents(mods_installed)
+        return mods_installed
 
     def pprint_mods_installed(self):
         root_manifests = [
