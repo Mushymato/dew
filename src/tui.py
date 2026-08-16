@@ -1,9 +1,11 @@
 import os
 import subprocess
 from collections import deque
+import time
 from typing import List
+from textual import work
 from textual.app import App, ComposeResult
-from textual.command import Provider, Hits, Hit
+from textual.command import Provider, Hits, Hit, DiscoveryHit
 from textual.widgets import (
     Tree,
     Footer,
@@ -72,9 +74,7 @@ class ManifestTable(DataTable):
 class SMAPICommands(Provider):
     async def search(self, query: str) -> Hits:
         matcher = self.matcher(query)
-
         assert isinstance(self.app, DewApp)
-
         score = matcher.match("smapi")
         if score > 0:
             yield Hit(
@@ -83,6 +83,13 @@ class SMAPICommands(Provider):
                 self.app.run_smapi,
                 help="Launch SMAPI",
             )
+
+    async def discover(self) -> Hits:
+        yield DiscoveryHit(
+            "Launch SMAPI",
+            self.app.run_smapi,
+            help="Launch SMAPI",
+        )
 
 
 class DewApp(App):
@@ -113,18 +120,22 @@ class DewApp(App):
         self.smapi: subprocess.Popen = None
 
     def run_smapi(self):
-        # env explodes this and make smapi not find graphic device
-        os.environ["SMAPI_MODS_PATH"] = str(self.app.mod_dir.mod_path)
+        if self.smapi is not None:
+            self.smapi.kill()
+        self.query_one(Log).clear()
+
+        environ = dict(os.environ)
+        environ["SMAPI_MODS_PATH"] = str(self.app.mod_dir.mod_path)
         self.smapi = subprocess.Popen(
             [self.mod_dir.stardew_path / "StardewModdingAPI"],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             cwd=self.mod_dir.stardew_path,
+            env=environ,
             encoding="utf-8",
+            start_new_session=True,
         )
-        smapi_logs = self.query_one(Log)
-        smapi_logs.clear()
-        self.poll_smapi.resume()
+        self.pipe_smapi_console()
 
     def compose(self) -> ComposeResult:
         with TabbedContent(initial="list"):
@@ -150,25 +161,20 @@ class DewApp(App):
                 if manifest.is_root
             ]
         )
-        self.poll_smapi = self.set_interval(1 / 60, self.do_poll_smapi, pause=True)
 
-    def do_poll_smapi(self):
+    @work(exclusive=True, thread=True)
+    async def pipe_smapi_console(self):
         smapi_logs = self.query_one(Log)
-        if self.smapi.poll():
-            self.smapi = None
-            self.poll_smapi.stop()
-            return
-        line = self.smapi.stdout.readline()
-        if len(line) > 0:
-            smapi_logs.write(self.smapi.stdout.readline().strip("\n"))
-        else:
+        try:
+            while line := self.smapi.stdout.readline():
+                self.call_from_thread(smapi_logs.write, line)
+        except:
             self.smapi.kill()
             smapi_logs.write("STOPPED")
             self.smapi = None
-            self.poll_smapi.stop()
+            return
 
     def on_tree_node_selected(self, event: Tree.NodeSelected[str]) -> None:
-        self.notify(str(event.node.data))
         event.node.data.enabled = not event.node.data.enabled
         event.node.set_label(event.node.data.richtext)
 
@@ -180,3 +186,8 @@ class DewApp(App):
             "status",
             mani.status_mark,
         )
+
+    async def action_quit(self) -> None:
+        if self.smapi is not None:
+            self.smapi.kill()
+        self.exit()
