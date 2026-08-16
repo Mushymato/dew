@@ -1,6 +1,6 @@
 import logging
 from pathlib import Path
-from typing import Dict
+from typing import Dict, List
 from dotenv import dotenv_values
 from rich.text import Text
 import pyjson5
@@ -8,6 +8,8 @@ import pyjson5
 from .updooter import Updooter
 
 logger = logging.getLogger(__name__)
+
+MANIFEST = "manifest.json"
 
 
 class CaselessDict(dict):
@@ -38,15 +40,16 @@ class CaselessDict(dict):
 
 
 class Manifest:
-    def __init__(self, manifest_path, enabled):
-        self._path = manifest_path
-        with open(self._path, "r", encoding="utf-8-sig") as fn:
+    def __init__(self, manifest_path: Path, enabled: bool):
+        self.manifest_path: Path = manifest_path.absolute().resolve()
+        with open(self.manifest_path, "r", encoding="utf-8-sig") as fn:
             try:
                 self._data = CaselessDict(pyjson5.load(fn))
             except:
                 raise
-        self.unique_id = self._data["UniqueId"]
-        self.name = self._data["Name"]
+        self.folder_path: Path = self.manifest_path.parent
+        self.unique_id: str = self._data["UniqueId"]
+        self.name: str = self._data["Name"]
         self.nexus_id = None
         for upkey in self._data.get("UpdateKeys", []):
             if upkey.lower().startswith("nexus:"):
@@ -62,24 +65,24 @@ class Manifest:
             for dep in self._data.get("Dependencies", [])
         ]
         # update in pass 2
-        self.dependents = []
-        self.content_packs = []
+        self.dependents: List[Manifest] = []
+        self.content_packs: List[Manifest] = []
         # for manager
-        self.base_enabled = enabled
-        self.enabled = self.base_enabled
+        self.current_enabled = enabled
+        self.pending_enabled = self.current_enabled
 
     def __repr__(self):
-        return f"{self.unique_id} (n:{self.nexus_id})"
+        return f"{self.unique_id} [{self.status_mark}](n:{self.nexus_id})"
 
     @property
     def richtext(self):
-        if self.enabled:
+        if self.pending_enabled:
             return Text(str(self))
         return Text(str(self), style="strike")
 
     @property
     def status_mark(self):
-        return "✔" if self.enabled else ""
+        return "✔" if self.pending_enabled else " "
 
     @property
     def is_root(self):
@@ -111,6 +114,19 @@ class Manifest:
             except:
                 pass
 
+    def toggle_pending_status(self):
+        self.pending_enabled = not self.pending_enabled
+
+    def apply_pending_status(self, mod_path: Path, mod_disabled_path: Path):
+        if self.pending_enabled == self.current_enabled:
+            return
+        if self.current_enabled and not self.pending_enabled:
+            self.folder_path = self.folder_path.move_into(mod_disabled_path)
+        elif not self.current_enabled and self.pending_enabled:
+            self.folder_path = self.folder_path.move_into(mod_path)
+        self.manifest_path = self.folder_path / MANIFEST
+        self.current_enabled = self.pending_enabled
+
 
 class ModDir:
     def __init__(self, rel_path: str):
@@ -119,6 +135,8 @@ class ModDir:
         self.stardew_path: Path = Path(self.dotenv["stardew_path"])
         self.mod_path: Path = self.stardew_path / self.rel_path
         self.mod_path.mkdir(exist_ok=True)
+        self.mod_disabled_path: Path = self.mod_path / ".disabled"
+        self.mod_disabled_path.mkdir(exist_ok=True)
         logger.info(f"Dir: {self.mod_path}")
         self.updooter: Updooter = Updooter(self.mod_path, self.dotenv["nexus_apikey"])
         self._mods_installed: CaselessDict[str, Manifest] = None
@@ -131,23 +149,33 @@ class ModDir:
         return self._mods_installed
 
     def init_mods_installed(self) -> dict[str, Manifest]:
-        mods_installed = {}
-        for root, dirs, _files in self.mod_path.walk():
-            for dirname in dirs:
-                manifest_path = root / dirname / "manifest.json"
+        mods_installed: dict[str, Manifest] = {}
+        for root, dirs, files in self.mod_path.walk(follow_symlinks=True):
+            if MANIFEST in files:
+                dirs.clear()
+                manifest_path = (root / MANIFEST).absolute()
                 if not manifest_path.is_file():
                     continue
-                dirname = Path(dirname)
-                enabled = all((not part.startswith(".") for part in dirname.parts))
+                enabled = all(
+                    (
+                        not part.startswith(".")
+                        for part in manifest_path.relative_to(self.mod_path).parts
+                    )
+                )
                 manifest = Manifest(manifest_path, enabled)
+                upper_id = manifest.unique_id.upper()
+                if upper_id in mods_installed:
+                    continue
                 mods_installed[manifest.unique_id.upper()] = manifest
         for manifest in mods_installed.values():
             manifest.add_dependents(mods_installed)
         return mods_installed
 
     def pprint_mods_installed(self):
-        root_manifests = [
-            manifest for manifest in self.mods_installed.values() if manifest.is_root
-        ]
-        for manifest in root_manifests:
-            manifest.pprint()
+        for manifest in self.mods_installed.values():
+            if manifest.is_root:
+                manifest.pprint()
+
+    def apply_all_pending_status(self):
+        for manifest in self.mods_installed.values():
+            manifest.apply_pending_status(self.mod_path, self.mod_disabled_path)

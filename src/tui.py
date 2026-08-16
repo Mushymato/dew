@@ -1,19 +1,11 @@
 import os
 import subprocess
 from collections import deque
-import time
 from typing import List
 from textual import work
 from textual.app import App, ComposeResult
 from textual.command import Provider, Hits, Hit, DiscoveryHit
-from textual.widgets import (
-    Tree,
-    Footer,
-    TabbedContent,
-    TabPane,
-    DataTable,
-    Log,
-)
+from textual.widgets import Tree, Footer, TabbedContent, TabPane, DataTable
 from .mod_dir import ModDir, Manifest
 
 
@@ -94,14 +86,10 @@ class SMAPICommands(Provider):
 
 class DewApp(App):
     CSS = """
-    Screen {
-        layout: horizontal;
-        align: center middle; 
-    }
-    TabbedContent { height: auto; width: 20vw; }
-    ManifestTable { width: auto; }
-    ManifestTree { width: auto; }
-    RichLog { width: 100%; padding: 1 }
+    TabbedContent { height: auto; width: 100%; align: center middle; }
+    TabPane { width: 100%; align: center middle; }
+    ManifestTable { width: 100%; }
+    ManifestTree { width: 100%; }
     """
 
     COMMANDS = App.COMMANDS | {SMAPICommands}
@@ -115,27 +103,30 @@ class DewApp(App):
         ansi_color=None,
     ):
         super().__init__(driver_class, css_path, watch_css, ansi_color)
-        self.mod_dir = mod_dir
+        self.mod_dir: ModDir = mod_dir
         self.title = "dew"
-        self.smapi: subprocess.Popen = None
+        self.smapi_procs: List[subprocess.Popen] = []
 
     def run_smapi(self):
-        if self.smapi is not None:
-            self.smapi.kill()
-        self.query_one(Log).clear()
-
+        # do any required moves now
+        mod_dir: ModDir = self.app.mod_dir
+        mod_dir.apply_all_pending_status()
+        # launch
         environ = dict(os.environ)
-        environ["SMAPI_MODS_PATH"] = str(self.app.mod_dir.mod_path)
-        self.smapi = subprocess.Popen(
-            [self.mod_dir.stardew_path / "StardewModdingAPI"],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            cwd=self.mod_dir.stardew_path,
-            env=environ,
-            encoding="utf-8",
-            start_new_session=True,
+        environ["SMAPI_MODS_PATH"] = str(mod_dir.mod_path)
+        # TODO: configure console
+        self.smapi_procs.append(
+            subprocess.Popen(
+                [
+                    "konsole",
+                    "--new-tab",
+                    "-e",
+                    self.mod_dir.stardew_path / "StardewModdingAPI",
+                ],
+                cwd=self.mod_dir.stardew_path,
+                env=environ,
+            )
         )
-        self.pipe_smapi_console()
 
     def compose(self) -> ComposeResult:
         with TabbedContent(initial="list"):
@@ -146,7 +137,6 @@ class DewApp(App):
                 tree.root.expand()
                 tree.root.allow_expand = False
                 yield tree
-        yield Log(highlight=True, name="smapi", id="smapi")
 
         yield Footer()
 
@@ -162,25 +152,13 @@ class DewApp(App):
             ]
         )
 
-    @work(exclusive=True, thread=True)
-    async def pipe_smapi_console(self):
-        smapi_logs = self.query_one(Log)
-        try:
-            while line := self.smapi.stdout.readline():
-                self.call_from_thread(smapi_logs.write, line)
-        except:
-            self.smapi.kill()
-            smapi_logs.write("STOPPED")
-            self.smapi = None
-            return
-
-    def on_tree_node_selected(self, event: Tree.NodeSelected[str]) -> None:
-        event.node.data.enabled = not event.node.data.enabled
-        event.node.set_label(event.node.data.richtext)
+    # def on_tree_node_selected(self, event: Tree.NodeSelected[str]) -> None:
+    #     event.node.data.toggle_pending_status()
+    #     event.node.set_label(event.node.data.richtext)
 
     def on_data_table_row_selected(self, event: DataTable.RowSelected):
         mani: Manifest = self.mod_dir.mods_installed.get(event.row_key.value.upper())
-        mani.enabled = not mani.enabled
+        mani.toggle_pending_status()
         event.control.update_cell(
             event.row_key,
             "status",
@@ -188,6 +166,6 @@ class DewApp(App):
         )
 
     async def action_quit(self) -> None:
-        if self.smapi is not None:
-            self.smapi.kill()
+        for smapi in self.smapi_procs:
+            smapi.kill()
         self.exit()

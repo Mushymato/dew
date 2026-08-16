@@ -8,7 +8,7 @@ def run_updoot():
     parser = argparse.ArgumentParser(description="do nexus mod updoots")
     parser.add_argument("nexus_ids", nargs="*")
     parser.add_argument("--tui", action="store_true", default=False)
-    parser.add_argument("-md", "--mods_dir", default="Mods-play")
+    parser.add_argument("-md", "--mods_dir", default="Mods")
     parser.add_argument("-ls", "--list_mods", action="store_true")
     args = parser.parse_args()
 
